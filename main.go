@@ -27,7 +27,6 @@ const (
 	LERR
 	MaxBodySize = 8 * 1024 * 1024
 
-	// ANSI colors
 	colorReset  = "\033[0m"
 	colorRed    = "\033[31m"
 	colorGreen  = "\033[32m"
@@ -117,6 +116,9 @@ func NewScanner(input, output, ua string, workers, rps, maxLinks int, logLevel s
 }
 
 func (s *Scanner) Run() {
+	start := time.Now()
+	s.logger.Info("scan started | workers=%d rps=%d maxLinks=%d", s.workers, int(s.limiter.Limit()), s.maxLinks)
+
 	jobs := make(chan string, s.workers)
 	results := make(chan string, s.workers*100)
 	var wg sync.WaitGroup
@@ -137,6 +139,9 @@ func (s *Scanner) Run() {
 	}()
 
 	s.writeOutput(results)
+
+	elapsed := time.Since(start)
+	s.logger.Info("scan finished | duration=%s", elapsed.String())
 }
 
 func (s *Scanner) readInput(jobs chan<- string) {
@@ -174,12 +179,12 @@ func (s *Scanner) worker(jobs <-chan string, results chan<- string) {
 			continue
 		}
 
-		s.processHost(ctx, rawURL, results)
+		s.processSite(ctx, rawURL, results)
 		cancel()
 	}
 }
 
-func (s *Scanner) processHost(ctx context.Context, rawURL string, results chan<- string) {
+func (s *Scanner) processSite(ctx context.Context, rawURL string, results chan<- string) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		s.logger.Err("invalid URL %s: %v", rawURL, err)
@@ -187,22 +192,20 @@ func (s *Scanner) processHost(ctx context.Context, rawURL string, results chan<-
 	}
 
 	base := fmt.Sprintf("%s://%s", parsed.Scheme, parsed.Host)
-	s.logger.Info("processing host: %s", base)
+	s.logger.Info("processing site: %s", base)
 
 	if s.fetchSitemap(ctx, base+"/sitemap.xml", results) {
 		return
 	}
 
 	s.logger.Debug("no sitemap.xml at root, checking robots.txt: %s", base)
-	smLinks := s.findSitemapsInRobots(ctx, base+"/robots.txt")
-	if len(smLinks) == 0 {
-		s.logger.Warn("no sitemap references found for %s", base)
+	smLink := s.findSitemapInRobots(ctx, base+"/robots.txt")
+	if smLink == "" {
+		s.logger.Warn("no sitemap reference found for %s", base)
 		return
 	}
 
-	for _, link := range smLinks {
-		s.fetchSitemap(ctx, link, results)
-	}
+	s.fetchSitemap(ctx, smLink, results)
 }
 
 func (s *Scanner) fetchSitemap(ctx context.Context, smURL string, results chan<- string) bool {
@@ -242,7 +245,6 @@ func (s *Scanner) fetchSitemap(ctx context.Context, smURL string, results chan<-
 		return false
 	}
 
-	// Игнорируем sitemaps, являющиеся индексами, чтобы избежать рекурсии и падений
 	var si SitemapIndex
 	if err := xml.Unmarshal(data, &si); err == nil && len(si.Locations) > 0 {
 		s.logger.Debug("found sitemap index: %s (recursive parsing disabled)", smURL)
@@ -269,29 +271,28 @@ func (s *Scanner) fetchSitemap(ctx context.Context, smURL string, results chan<-
 	return false
 }
 
-func (s *Scanner) findSitemapsInRobots(ctx context.Context, robotsURL string) []string {
+func (s *Scanner) findSitemapInRobots(ctx context.Context, robotsURL string) string {
 	req, _ := http.NewRequestWithContext(ctx, "GET", robotsURL, nil)
 	req.Header.Set("User-Agent", s.userAgent)
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return nil
+		return ""
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil
+		return ""
 	}
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*512))
 	re := regexp.MustCompile(`(?i)Sitemap:\s*(https?://\S+)`)
-	matches := re.FindAllStringSubmatch(string(body), -1)
+	match := re.FindStringSubmatch(string(body))
 
-	var found []string
-	for _, m := range matches {
-		found = append(found, strings.TrimSpace(m[1]))
+	if len(match) > 1 {
+		return strings.TrimSpace(match[1])
 	}
-	return found
+	return ""
 }
 
 func (s *Scanner) writeOutput(results <-chan string) {
@@ -317,13 +318,13 @@ func (s *Scanner) writeOutput(results <-chan string) {
 func main() {
 	i := flag.String("i", "-", "input file")
 	o := flag.String("o", "-", "output file")
-	ua := flag.String("ua", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", "user agent string")
+	ua := flag.String("ua", "Mozilla/5.0", "user agent string")
 	w := flag.Int("w", 50, "workers count")
 	r := flag.Int("r", 150, "rps limit")
 	m := flag.Int("m", 3000, "max links in sitemap to process")
 	l := flag.String("l", "info", "log level (debug, info, warn, err)")
 	ct := flag.Duration("ct", 5*time.Second, "connection timeout")
-	rt := flag.Duration("rt", 15*time.Second, "request timeout (context)")
+	rt := flag.Duration("rt", 15*time.Second, "request timeout")
 	flag.Parse()
 
 	scanner := NewScanner(*i, *o, *ua, *w, *r, *m, *l, *ct, *rt)
