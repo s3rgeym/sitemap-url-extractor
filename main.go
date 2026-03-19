@@ -83,9 +83,10 @@ type Scanner struct {
 	visitedURLs     sync.Map
 	visitedSitemaps sync.Map
 	userAgent       string
+	maxLinks        int
 }
 
-func NewScanner(input, output, ua string, workers, rps int, logLevel string, ct, rt time.Duration) *Scanner {
+func NewScanner(input, output, ua string, workers, rps, maxLinks int, logLevel string, ct, rt time.Duration) *Scanner {
 	levels := map[string]int{"debug": LDEBUG, "info": LINFO, "warn": LWARN, "err": LERR}
 	level, ok := levels[strings.ToLower(logLevel)]
 	if !ok {
@@ -111,6 +112,7 @@ func NewScanner(input, output, ua string, workers, rps int, logLevel string, ct,
 		},
 		limiter:   rate.NewLimiter(rate.Limit(rps), rps),
 		userAgent: ua,
+		maxLinks:  maxLinks,
 	}
 }
 
@@ -240,17 +242,20 @@ func (s *Scanner) fetchSitemap(ctx context.Context, smURL string, results chan<-
 		return false
 	}
 
+	// Игнорируем sitemaps, являющиеся индексами, чтобы избежать рекурсии и падений
 	var si SitemapIndex
 	if err := xml.Unmarshal(data, &si); err == nil && len(si.Locations) > 0 {
-		s.logger.Debug("found sitemap index: %s", smURL)
-		for _, loc := range si.Locations {
-			s.fetchSitemap(ctx, loc, results)
-		}
-		return true
+		s.logger.Debug("found sitemap index: %s (recursive parsing disabled)", smURL)
+		return false
 	}
 
 	var sm Sitemap
 	if err := xml.Unmarshal(data, &sm); err == nil && len(sm.Locations) > 0 {
+		if len(sm.Locations) > s.maxLinks {
+			s.logger.Warn("skipping sitemap %s: too many links (%d > %d)", smURL, len(sm.Locations), s.maxLinks)
+			return false
+		}
+
 		s.logger.Debug("extracted %d links from %s", len(sm.Locations), smURL)
 		for _, loc := range sm.Locations {
 			loc = strings.TrimSpace(loc)
@@ -315,11 +320,12 @@ func main() {
 	ua := flag.String("ua", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", "user agent string")
 	w := flag.Int("w", 50, "workers count")
 	r := flag.Int("r", 150, "rps limit")
+	m := flag.Int("m", 1000, "max links in sitemap to process")
 	l := flag.String("l", "info", "log level (debug, info, warn, err)")
 	ct := flag.Duration("ct", 5*time.Second, "connection timeout")
 	rt := flag.Duration("rt", 15*time.Second, "request timeout (context)")
 	flag.Parse()
 
-	scanner := NewScanner(*i, *o, *ua, *w, *r, *l, *ct, *rt)
+	scanner := NewScanner(*i, *o, *ua, *w, *r, *m, *l, *ct, *rt)
 	scanner.Run()
 }
