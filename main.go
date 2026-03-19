@@ -320,7 +320,7 @@ func main() {
 	ua := flag.String("ua", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", "user agent string")
 	w := flag.Int("w", 50, "workers count")
 	r := flag.Int("r", 150, "rps limit")
-	m := flag.Int("m", 1000, "max links in sitemap to process")
+	m := flag.Int("m", 3000, "max links in sitemap to process")
 	l := flag.String("l", "info", "log level (debug, info, warn, err)")
 	ct := flag.Duration("ct", 5*time.Second, "connection timeout")
 	rt := flag.Duration("rt", 15*time.Second, "request timeout (context)")
